@@ -32,6 +32,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define UART_BUF_LEN (150)
+#define SPI_BUF_LEN (2060)
+#define SPI_PACKET_LEN (20)
+#define SPI_PACKETS_PER_XFER (SPI_BUF_LEN/SPI_PACKET_LEN)
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,7 +54,14 @@ DMA_HandleTypeDef hdma_spi1_tx;
 
 /* USER CODE BEGIN PV */
 
-	//variables dedicated to motor controller
+	/*SPI BT VARIABLES*/
+	volatile static unit8_t g_spi_send_buf[SPI_BUF_LEN]  = {0};  //data to be sent
+	volatile static unit8_t g_spi_rec_buf[SPI_PACKET_LEN]= {0};  //buffer for received data
+	volatile static int g_spi_send_idx   = 0;	//current index in TX buffer
+	volatile static int g_spi_packet_num = 0;	//counts number of packets sent, out of 103
+
+
+	/*MOTOR CONTROLLER VARIABLES*/
 	//ain1 pin PC7
 	//ain2 pin PC8
 	//bin1 pin PC9
@@ -78,11 +90,68 @@ static void MX_ADC1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USB_OTG_HS_USB_Init(void);
 /* USER CODE BEGIN PFP */
+
+
+static uint16_t Endian_Swap_16(uint8_t *);
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *);
+
 static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *index);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+
+/* Endian_Swap_16 for SPI
+ * @brief Swap endian-ness of 2 bytes in an array
+ * @param Array pointer to 2 contiguous bytes of data
+ * @retval 16-bit integer containing byte order
+ */
+uint16_t Endian_Swap_16(uint8_t bytes[2]){
+	union{
+		uint8_t bytes[2];
+		uint16t swapped;
+	}   swapper = { 0 };
+
+	swapper.bytes[0] = bytes[1];
+	swapper.bytes[1] = bytes[0];
+}
+
+/* HAL_SPI_TxRxCpltCallback for SPI
+ * @brief
+ * @param
+ * @retval
+ */
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi){
+	if(hspi->Instance == SPI1){
+		// 1. Update TX buffer array index vars so it knows
+		// where to start sending data from during next Xmission
+		g_spi_send_idx = (g_spi_send_idx + SPI_PACKET_LEN) % SPI_BUF_LEN;
+		g_spi_packet_num = (g_spi_packet_num+1) % SPI_PACKETS_PER_XFER;
+		// 2. Checks received command vs prev commands; changes global command var
+		if(g_command!=Endian_Swap_16(g_spi_rec_buf)){
+			g_command = Endian_Swap_16(g_spi_rec_buf);
+		}
+		// 3. Make sure the buffer is only sent in increments of 20 bytes at a time
+		// (omitted UART check theory, can readd given serial output)
+		// 4. Stops current interrupt routine, check for success.
+		int ret = HAL_SPI_DMAStop(&hspi1);
+		  //check if ret!=HAL_OK ??
+		ret = HAL_SPI_TransmitReceive_DMA(&hspi1, &g_spi_send_buf[g_spi_send_idx], g_spi_rec_buf, SPI_PACKET_LEN);
+		if (ret != HAL_OK){
+			ret=HAL_SPI_Abort(&hspi1);
+			return;
+		}
+	}
+}
+
+
+/* motorcontroller for Encoder, Motor Control
+ * @brief ...
+ * @param ...
+ * @retval ...
+ */
 
 static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *index)
 {
@@ -188,6 +257,13 @@ int main(void)
   MX_USB_OTG_HS_USB_Init();
   /* USER CODE BEGIN 2 */
 
+  //setup for SPI interrupt with DMA
+  int ret = HAL_SPI_TransmitReceive_DMA(&hspi1,&g_spi_send_buf[g_spi_send_idx], g_spi_rec_buf,SPI_PACKET_LEN);
+  /*if (ret != HAL_OK){
+	  //do WHATEVER ERROR HANDLING WE NEED HERE
+	  //shut down MCU, reset, try again etc.
+  }*/
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -198,7 +274,7 @@ int main(void)
 		motorcontroller(&ALast, &cnt, &scnt, &istep, &index);
 		HAL_Delay(1);		//delay 1ms
 
-
+		HAL_SPI_TxRxCpltCallback(&hspi1);
 
     /* USER CODE END WHILE */
 
