@@ -38,6 +38,8 @@
 #define SPI_PACKET_LEN (20)
 #define SPI_PACKETS_PER_XFER (SPI_BUF_LEN/SPI_PACKET_LEN)
 
+#define ADC_BUF_LEN 4096 //12-bit ADC for 4k samples
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -68,6 +70,8 @@ const osThreadAttr_t operateADC_attributes = {
   .stack_size = 128 * 4
 };
 /* USER CODE BEGIN PV */
+
+	uint16_t adc_buf[ADC_BUF_LEN];
 
 	/*SPI BT VARIABLES*/
 	volatile static uint8_t g_spi_send_buf[SPI_BUF_LEN]  = {0};  //data to be sent
@@ -399,13 +403,13 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -616,6 +620,19 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+//HAL gives these callback functions for us to use (and it to call)
+//when the first half of the buffer is filled
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
+	//buffer is half-full, do what here
+	//interrupts: convHalfCplt
+}
+
+//when the buffer is completely filled
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+	//buffer is full, do what here
+	//interrupts: convCplt
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_beginMotor */
@@ -653,6 +670,7 @@ void beginADC(void *argument)
   /* Infinite loop */
   for(;;)
   {
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adc_buf, ADC_BUF_LEN);
     osDelay(1);
   }
 
