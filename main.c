@@ -19,7 +19,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -38,8 +37,6 @@
 #define SPI_PACKET_LEN (20)
 #define SPI_PACKETS_PER_XFER (SPI_BUF_LEN/SPI_PACKET_LEN)
 
-#define ADC_BUF_LEN 4096 //12-bit ADC for 4k samples
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -55,49 +52,30 @@ SPI_HandleTypeDef hspi1;
 DMA_HandleTypeDef hdma_spi1_rx;
 DMA_HandleTypeDef hdma_spi1_tx;
 
-/* Definitions for operateMotor */
-osThreadId_t operateMotorHandle;
-const osThreadAttr_t operateMotor_attributes = {
-  .name = "operateMotor",
-  .priority = (osPriority_t) osPriorityBelowNormal,
-  .stack_size = 128 * 4
-};
-/* Definitions for operateADC */
-osThreadId_t operateADCHandle;
-const osThreadAttr_t operateADC_attributes = {
-  .name = "operateADC",
-  .priority = (osPriority_t) osPriorityNormal,
-  .stack_size = 128 * 4
-};
 /* USER CODE BEGIN PV */
 
-	uint16_t adc_buf[ADC_BUF_LEN];
+/*SPI BT VARIABLES*/
+volatile static uint16_t g_command = 0x0000;//stores most recent rcv'd command
+volatile static uint8_t g_spi_send_buf[SPI_BUF_LEN]  = {0};  //data to be sent
+volatile static uint8_t g_spi_rec_buf[SPI_PACKET_LEN]= {0};  //buffer for received data
+volatile static int g_spi_send_idx   = 0;	//current index in TX buffer
+volatile static int g_spi_packet_num = 0;	//counts number of packets sent, out of 103
 
-	/*SPI BT VARIABLES*/
-	volatile static uint8_t g_spi_send_buf[SPI_BUF_LEN]  = {0};  //data to be sent
-	volatile static uint8_t g_spi_rec_buf[SPI_PACKET_LEN]= {0};  //buffer for received data
-	volatile static int g_spi_send_idx   = 0;	//current index in TX buffer
-	volatile static int g_spi_packet_num = 0;	//counts number of packets sent, out of 103
 
-	volatile static uint16_t g_command = 0x0000;//stores most recent rcv'd command
-
-	/*MOTOR CONTROLLER VARIABLES*/
-	//ain1 pin PC7
-	//ain2 pin PC8
-	//bin1 pin PC9
-	//bin2 pin PA8
-	//int istep=0; //initial step, only variable which does not reset
-
-	int ALast=0;
-	int cnt=0;
-	int scnt=0;  	//position count
-	int istep=0;    //step count
-	int index=0;
-
-	//fault_n pin is: went PC6 (not on pcb; need to add connection)
-	//sleep_n pin is: pin PA9
-
-	//int prev_sleep_n=0;  // don't need?
+/*MOTOR CONTROLLER VARIABLES*/
+/*	(motor to mcu pinouts)
+*	ain1 to pin PC7
+*	ain2 to pin PC8
+*	bin1 to pin PC9
+*	bin2 to pin PA8
+*	fault_n pin is: went PC6 (not on pcb; need to add connection)
+*	sleep_n pin is: pin PA9
+*/
+int ALast=0;
+int cnt=0;			//position variable (0 to 200), each increment is a rotation of 1.8 degrees
+int scnt=0;  		//step count (used to update motor inputs)
+int istep=0;    	//initial step, only variable which does not reset
+int motorindex=0;
 
 
 /* USER CODE END PV */
@@ -109,9 +87,6 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USB_OTG_HS_USB_Init(void);
-void beginMotor(void *argument);
-void beginADC(void *argument);
-
 /* USER CODE BEGIN PFP */
 
 
@@ -175,11 +150,8 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi){
  * @param ...
  * @retval ...
  */
-
 static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *index)
 {
-	scnt=1+istep+4;
-
 	/* Count Increment Code */
 	int A=HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_11);
 	int B=HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_12);
@@ -189,13 +161,13 @@ static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *in
 		HAL_Delay(.01);
 	}
 	else if (A && B && *ALast){	//A, B, and prev A ??
-		cnt=cnt+1;
+		*cnt=*cnt+1;
 	}
 	else if (X){				//X
-		index=1;
+		*index=1;
 	}
 
-	ALast = A;		//set ALast to current A for next iteration to check
+	*ALast = A;		//set ALast to current A for next iteration to check
 
 
 	/* While Loop Dedicated (Based on Psuedo-Code) */
@@ -211,7 +183,7 @@ static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *in
 	}
 
 	//while scnt<200 or index<1 && fault_n is high
-	if((cnt<200||index<1)&&(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_6)))
+	if((*cnt<200||*index<1)&&(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_6)))
 	{
 		if((*scnt)%4==1){
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7,GPIO_PIN_SET);		//Ain1
@@ -219,19 +191,19 @@ static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *in
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9,GPIO_PIN_RESET);	//Bin1
 			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8,GPIO_PIN_RESET);	//Bin2
 		}
-		else if(*scnt%4==2){
+		else if((*scnt)%4==2){
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7,GPIO_PIN_RESET);	//Ain1
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8,GPIO_PIN_RESET);	//Ain2
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9,GPIO_PIN_SET);		//Bin1
 			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8,GPIO_PIN_RESET);	//Bin2
 		}
-		else if(*scnt%4==3){
+		else if((*scnt)%4==3){
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7,GPIO_PIN_RESET);	//Ain1
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8,GPIO_PIN_SET);		//Ain2
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9,GPIO_PIN_RESET);	//Bin1
 			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8,GPIO_PIN_RESET);	//Bin2
 		}
-		else if(*scnt%4==0){
+		else if((*scnt)%4==0){
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7,GPIO_PIN_RESET);	//Ain1
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8,GPIO_PIN_RESET);	//Ain2
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9,GPIO_PIN_RESET);	//Bin1
@@ -242,7 +214,7 @@ static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *in
 
 	else if(!HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9))  //end process when sleep_n < 0
 	{
-		istep = (*scnt-1)%4;
+		*istep = ((*scnt)-1)%4;
 	}
 }
 
@@ -291,44 +263,15 @@ int main(void)
 
   /* USER CODE END 2 */
 
-  /* Init scheduler */
-  osKernelInitialize();
-
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
-
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  /* USER CODE END RTOS_SEMAPHORES */
-
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
-
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
-
-  /* Create the thread(s) */
-  /* creation of operateMotor */
-  operateMotorHandle = osThreadNew(beginMotor, NULL, &operateMotor_attributes);
-
-  /* creation of operateADC */
-  operateADCHandle = osThreadNew(beginADC, NULL, &operateADC_attributes);
-
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
-
-  /* Start scheduler */
-  osKernelStart();
-
-  /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+		scnt=1+istep+4;
+		motorcontroller(&ALast, &cnt, &scnt, &istep, &motorindex);
+		HAL_Delay(1);		//delay 1ms
+
+		HAL_SPI_TxRxCpltCallback(&hspi1);
 
     /* USER CODE END WHILE */
 
@@ -403,13 +346,13 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -620,85 +563,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-//HAL gives these callback functions for us to use (and it to call)
-//when the first half of the buffer is filled
-void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc){
-	//buffer is half-full, do what here
-	//interrupts: convHalfCplt
-}
-
-//when the buffer is completely filled
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
-	//buffer is full, do what here
-	//interrupts: convCplt
-}
-
 /* USER CODE END 4 */
-
-/* USER CODE BEGIN Header_beginMotor */
-/**
-  * @brief  Function implementing the operateMotor thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_beginMotor */
-void beginMotor(void *argument)
-{
-  /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-
-  //in case of accidental exit from task loop
-  osThreadTerminate(NULL);
-
-  /* USER CODE END 5 */
-}
-
-/* USER CODE BEGIN Header_beginADC */
-/**
-* @brief Function implementing the operateADC thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_beginADC */
-void beginADC(void *argument)
-{
-  /* USER CODE BEGIN beginADC */
-  /* Infinite loop */
-  for(;;)
-  {
-	HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adc_buf, ADC_BUF_LEN);
-    osDelay(1);
-  }
-
-  //in case of accidental exit from task loop
-  osThreadTerminate(NULL);
-  /* USER CODE END beginADC */
-}
-
-/**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM6 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM6) {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
-}
 
 /**
   * @brief  This function is executed in case of error occurrence.
