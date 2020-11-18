@@ -573,7 +573,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 
 	//upon adc_buf full 1024 ADC samples (2048 bytes)
 	//memcpy adc_buf to tx_buf[0:2048]
-	memcpy((uint32_t*)g_spi_send_buf,(uint32_t*)adc_buf,2);
+	memcpy(&g_spi_send_buf,&adc_buf,(uint8_t)2048);
 	//set tx_buf[2049] to motor pos uint8_t
 	g_spi_send_buf[2049]=cnt;
 	//set tx_buf[2050] to battery low (GPIO pin read)
