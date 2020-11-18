@@ -33,9 +33,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define UART_BUF_LEN (150)
-#define SPI_BUF_LEN (2060)
+#define SPI_BUF_LEN (2060)	//target TX buffer size
 #define SPI_PACKET_LEN (20)
 #define SPI_PACKETS_PER_XFER (SPI_BUF_LEN/SPI_PACKET_LEN)
+#define ADC_BUF_LEN 1024	//ADC-DMA target buffer size
 
 /* USER CODE END PD */
 
@@ -54,13 +55,15 @@ DMA_HandleTypeDef hdma_spi1_tx;
 
 /* USER CODE BEGIN PV */
 
+/*ADC VARIABLES*/
+uint16_t adc_buf[ADC_BUF_LEN];
+
 /*SPI BT VARIABLES*/
 volatile static uint16_t g_command = 0x0000;//stores most recent rcv'd command
 volatile static uint8_t g_spi_send_buf[SPI_BUF_LEN]  = {0};  //data to be sent
 volatile static uint8_t g_spi_rec_buf[SPI_PACKET_LEN]= {0};  //buffer for received data
 volatile static int g_spi_send_idx   = 0;	//current index in TX buffer
 volatile static int g_spi_packet_num = 0;	//counts number of packets sent, out of 103
-
 
 /*MOTOR CONTROLLER VARIABLES*/
 /*	(motor to mcu pinouts)
@@ -76,7 +79,6 @@ int cnt=0;			//position variable (0 to 200), each increment is a rotation of 1.8
 int scnt=0;  		//step count (used to update motor inputs)
 int istep=0;    	//initial step, only variable which does not reset
 int motorindex=0;
-
 
 /* USER CODE END PV */
 
@@ -152,18 +154,21 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi){
  */
 static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *index)
 {
+
+	*scnt=1+*istep+4;
+
 	/* Count Increment Code */
 	int A=HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_11);
 	int B=HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_12);
 	int X=HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_10);
 
-	if (*ALast == A){			//prev A == A ??
+	if (*ALast == A){			//prev A == A, checking for 0->0 or 1->1
 		HAL_Delay(.01);
 	}
-	else if (A && B && *ALast){	//A, B, and prev A ??
+	else if (A && B && *ALast){	//position count increments when A has been high and B goes high
 		*cnt=*cnt+1;
 	}
-	else if (X){				//X
+	else if (X){				//index indicates when a full rotation (cnt>=200) occurs
 		*index=1;
 	}
 
@@ -171,19 +176,16 @@ static void motorcontroller(int *ALast, int *cnt, int *scnt, int *istep, int *in
 
 
 	/* While Loop Dedicated (Based on Psuedo-Code) */
-	if(HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9))//sleep_n is high
+	if(!HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_9)||!HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_6))//sleep_n or fault_n is low
 	{
-		if(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_6))//fault_n is high
-		{
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7,GPIO_PIN_RESET);
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8,GPIO_PIN_RESET);
-			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9,GPIO_PIN_RESET);
-			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8,GPIO_PIN_RESET);
-		}
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7,GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_8,GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOC, GPIO_PIN_9,GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8,GPIO_PIN_RESET);
 	}
 
-	//while scnt<200 or index<1 && fault_n is high
-	if((*cnt<200||*index<1)&&(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_6)))
+	//while cnt<200 or index<1 && fault_n is high
+	else if((*cnt<200||*index<1)&&(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_6)))
 	{
 		if((*scnt)%4==1){
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7,GPIO_PIN_SET);		//Ain1
@@ -261,17 +263,16 @@ int main(void)
 	  //shut down MCU, reset, try again etc.
   }*/
 
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adc_buf, ADC_BUF_LEN);  //starts ADC attached to DMA
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-		scnt=1+istep+4;
-		motorcontroller(&ALast, &cnt, &scnt, &istep, &motorindex);
-		HAL_Delay(1);		//delay 1ms
-
-		HAL_SPI_TxRxCpltCallback(&hspi1);
+	motorcontroller(&ALast, &cnt, &scnt, &istep, &motorindex);
+	//HAL_Delay(1);  //delay for 1ms so that motor can update properly
 
     /* USER CODE END WHILE */
 
@@ -346,13 +347,13 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
-  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
@@ -562,7 +563,17 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 
+	//upon adc_buf full 1024 ADC samples (2048 bytes)
+	//memcpy adc_buf to tx_buf[0:2048]
+
+	//set tx_buf[2049] to motor pos uint8_t
+
+	//set tx_buf[2050] to battery low (GPIO pin read)
+
+
+}
 /* USER CODE END 4 */
 
 /**
