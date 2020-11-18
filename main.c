@@ -528,8 +528,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PD9 PD13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_13;
+  /*Configure GPIO pin : PD9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
@@ -539,6 +539,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PD13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC6 */
@@ -567,11 +573,16 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
 
 	//upon adc_buf full 1024 ADC samples (2048 bytes)
 	//memcpy adc_buf to tx_buf[0:2048]
-
+	memcpy((uint32_t*)g_spi_send_buf,(uint32_t*)adc_buf,2);
 	//set tx_buf[2049] to motor pos uint8_t
-
+	g_spi_send_buf[2049]=cnt;
 	//set tx_buf[2050] to battery low (GPIO pin read)
-
+	if(HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_13)<1.5){
+		g_spi_send_buf[2050]=1;
+	}
+	else{
+		g_spi_send_buf[2050]=0;
+	}
 
 }
 /* USER CODE END 4 */
