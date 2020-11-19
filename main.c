@@ -116,6 +116,8 @@ uint16_t Endian_Swap_16(uint8_t bytes[2]){
 
 	swapper.bytes[0] = bytes[1];
 	swapper.bytes[1] = bytes[0];
+
+	return swapper.swapped;
 }
 
 /* HAL_SPI_TxRxCpltCallback for SPI
@@ -265,6 +267,9 @@ int main(void)
 
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*) adc_buf, ADC_BUF_LEN);  //starts ADC attached to DMA
 
+  //simulate for PLL (need to flesh out) but connect LED to see if board is programmed through SWD
+  HAL_GPIO_WritePin(GPIOF,GPIO_PIN_10,GPIO_PIN_SET);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -272,7 +277,7 @@ int main(void)
   while (1)
   {
 	motorcontroller(&ALast, &cnt, &scnt, &istep, &motorindex);
-	//HAL_Delay(1);  //delay for 1ms so that motor can update properly
+	HAL_Delay(0.5);  //delay for 0.5ms so that motor can update properly
 
     /* USER CODE END WHILE */
 
@@ -476,7 +481,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOF, GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5
-                          |GPIO_PIN_6, GPIO_PIN_RESET);
+                          |GPIO_PIN_6|GPIO_PIN_10, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_10, GPIO_PIN_RESET);
@@ -492,18 +497,12 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PF2 PF3 PF4 PF5
-                           PF6 */
+                           PF6 PF10 */
   GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5
-                          |GPIO_PIN_6;
+                          |GPIO_PIN_6|GPIO_PIN_10;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PF10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PA0 PA1 */
